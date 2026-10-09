@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 建议作用域：Via 浏览器 -->
+    <string-array name="xposedscope">
+        <item>mark.via</item>
+    </string-array>
+</resources>

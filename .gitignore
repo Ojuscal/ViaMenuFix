@@ -1,0 +1,20 @@
+# 构建产物
+/build/
+/out/
+
+# 签名密钥（绝对不要提交！丢了就没法发覆盖更新，泄露了别人能冒名发版）
+/keystore/
+*.jks
+*.keystore
+*.p12
+
+# APK 一律放到 Release，不进仓库
+*.apk
+*.apk.idsig
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db

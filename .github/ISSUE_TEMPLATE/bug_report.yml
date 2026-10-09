@@ -1,0 +1,46 @@
+name: Bug 报告
+description: 模块没生效 / 菜单位置不对 / 崩溃
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提 issue 前请先确认：**Via 的版本是否 7.3.4 (versionCode 20260920)**。
+        其他版本里混淆后的类名/方法名会变，模块会打印「挂钩失败（Via 版本可能已变化）」。
+  - type: input
+    id: module_version
+    attributes:
+      label: 模块版本
+      placeholder: v1.0.0
+    validations:
+      required: true
+  - type: input
+    id: via_version
+    attributes:
+      label: Via 版本
+      description: Via 设置 → 关于，或 `adb shell dumpsys package mark.via | grep version`
+      placeholder: 7.3.4 (20260920)
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: 手机与系统
+      placeholder: OnePlus 13 / Android 16 / KernelSU + Zygisk Next + LSPosed vX.X
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 长按位置（上半屏/下半屏/最底部）、菜单实际弹在哪、有没有截图
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 模块日志
+      description: '`adb logcat -d | grep ViaMenuFix`（或 LSPosed 管理器里的日志页）'
+      render: text
+    validations:
+      required: false
