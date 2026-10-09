@@ -1,4 +1,4 @@
-package com.viamenu.fix;
+package io.github.ojuscal.viamenufix;
 
 import android.app.Dialog;
 import android.content.Context;

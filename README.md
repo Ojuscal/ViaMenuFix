@@ -141,7 +141,7 @@ base64 -w0 keystore/viamenufix.jks   # 把输出粘进 GitHub Secrets
 
 ## 配置 / Configuration
 
-`src/com/viamenu/fix/ViaMenuModule.java` 顶部：
+`src/io/github/ojuscal/viamenufix/ViaMenuModule.java` 顶部：
 
 ```java
 /** false = 始终向下展开（默认，单手推荐）；true = 菜单垂直居中于手指 */
