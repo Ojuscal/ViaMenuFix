@@ -6,10 +6,12 @@ import android.graphics.Rect;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 
 import java.lang.reflect.Field;
+import java.util.WeakHashMap;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -18,45 +20,94 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * Via 浏览器长按菜单定位修正。
+ * Via 长按菜单修正 / Via Long-Press Menu Fix
  *
- * 原逻辑（w5.k.g0(int x, int y)，Via 7.3.4）以长按点 (x, y) 为锚点：
- *   y 在上半屏 -> gravity = TOP    ，菜单从手指向下展开；
- *   y 在下半屏 -> gravity = BOTTOM ，菜单从手指向上展开。
- * 后者会让菜单整块出现在手指上方，单手（拇指）够不到。
+ * Via 的长按菜单以点击点为锚点，并按点击点所在半屏决定展开方向：
+ *   上半屏 -> Gravity.TOP    ，从手指向下展开；
+ *   下半屏 -> Gravity.BOTTOM ，从手指向上展开（整张菜单跑到手指上方，单手够不到）。
  *
- * 本模块在 g0() 执行完、窗口首次绘制之前改写窗口 gravity / y：
- *   菜单恒定从手指向下展开；下方空间不足时整体上移，保证菜单完整可见。
+ * 本模块把菜单改成恒定向下展开，下方放不下时整体上移贴着可视区下沿。
  *
- * 目标：包名 mark.via，Via 7.3.4 (versionCode 20260920)，LSPosed / Xposed API 82。
+ * 两条路径：
+ *  1) 精准路径（默认）：hook Via 自己的菜单定位方法 w5.k.g0(II)V。
+ *     实测 Via 7.3.3(cn) / 7.3.3(gp) / 7.3.4 三个版本的 R8 名称映射一致，
+ *     该类与字段 a(Dialog)/c(高度)/e(顶部) 完全相同，一份模块通吃。
+ *  2) 兜底路径（精准路径找不到目标时自动启用；也可用 FORCE_FALLBACK 强制测试）：
+ *     完全不依赖混淆名，改为 hook 框架层：
+ *       Window.setContentView(...) 给"对话框窗口"打标记（菜单在 show() 之前就设参数，所以不能用 show 打标记）
+ *       Window.setAttributes(...)  识别「点定位 + 列表内容」的弹层并就地改写 gravity/y
  */
 public class ViaMenuModule implements IXposedHookLoadPackage {
 
     private static final String TAG = "[ViaMenuFix] ";
-    private static final String TARGET_PACKAGE = "mark.via";
+
+    /** Via 的包名：CN/国内版 mark.via，Google Play 版 mark.via.gp */
+    private static final String[] TARGET_PACKAGES = {"mark.via", "mark.via.gp"};
+
+    // ---- 精准路径用到的符号（Via 7.3.3 ~ 7.3.4 实测一致）----
     private static final String MENU_BUILDER_CLASS = "w5.k";
-    private static final String SHOW_AT_METHOD = "g0";
-
-    // 真实 dex 字段名（jadx 里的 f13248a 等只是它为避免与包名冲突而起的显示别名，
-    // 运行时字段名是单字母）。取不到时下面有按类型兜底的逻辑。
-    private static final String F_DIALOG = "a";       // w5.k.a     -> Dialog
-    private static final String F_CONTENT_H = "c";    // w5.k.c     -> int 内容区高度
-    private static final String F_CONTENT_TOP = "e";  // w5.k.e     -> int 内容区顶部屏幕 y
-
-    private static final String ANCHOR_METHOD_VIEW = "i0";   // i0(View, int, int)：锚在控件上
-    private static final String ANCHOR_METHOD_SIMPLE = "h0"; // h0(View)：内部转调 i0
+    private static final String SHOW_AT_METHOD = "g0";          // void g0(int x, int y)
+    private static final String ANCHOR_METHOD_VIEW = "i0";      // i0(View, int, int) 锚在控件上
+    private static final String ANCHOR_METHOD_SIMPLE = "h0";    // h0(View)
+    private static final String F_DIALOG = "a";                 // Dialog
+    private static final String F_CONTENT_H = "c";              // int 内容区高度
+    private static final String F_CONTENT_TOP = "e";            // int 内容区顶部屏幕 y
 
     /** false = 始终向下展开（默认，单手推荐）；true = 菜单垂直居中于手指 */
     private static final boolean CENTER_ON_FINGER = false;
 
-    /** g0 是由 i0/h0（锚定控件）调用的标记：这类菜单保持 Via 原逻辑，只改长按手指的菜单 */
+    /** 调试用：强制走框架层兜底路径（验证"Via 改名后"是否也能生效） */
+    private static final boolean FORCE_FALLBACK = false;
+
+    /** 标记：g0 由 i0/h0（锚定控件）调用，这类菜单保持原样 */
     private static final ThreadLocal<Boolean> VIEW_ANCHORED = new ThreadLocal<Boolean>();
+
+    /** 兜底路径：被 setContentView 过的窗口 = 对话框窗口 */
+    private static final WeakHashMap<Window, Boolean> DIALOG_WINDOWS = new WeakHashMap<Window, Boolean>();
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
-        if (!TARGET_PACKAGE.equals(lpparam.packageName)) {
+        if (!isTarget(lpparam.packageName)) {
             return;
         }
+        XposedBridge.log(TAG + "加载于 " + lpparam.packageName + " " + versionName(lpparam));
+
+        boolean primary = installPrimaryHook(lpparam);
+        if (!primary || FORCE_FALLBACK) {
+            XposedBridge.log(TAG + (primary ? "FORCE_FALLBACK：改用" : "精准路径不可用（Via 可能改名了），改用")
+                    + "框架层兜底路径");
+            installFallbackHooks();
+        }
+    }
+
+    private static boolean isTarget(String pkg) {
+        for (String p : TARGET_PACKAGES) {
+            if (p.equals(pkg)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String versionName(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            Object info = lpparam.appInfo;
+            if (info == null) {
+                return "";
+            }
+            // 用反射取，避免不同版本 API 桩里 appInfo 的类型声明差异
+            Object value = XposedHelpers.getObjectField(info, "versionName");
+            return value == null ? "" : String.valueOf(value);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    // ================================================================
+    // 路径 1：精准 hook Via 自己的菜单定位方法
+    // ================================================================
+
+    private boolean installPrimaryHook(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             XposedHelpers.findAndHookMethod(
                     MENU_BUILDER_CLASS, lpparam.classLoader, SHOW_AT_METHOD,
@@ -64,7 +115,7 @@ public class ViaMenuModule implements IXposedHookLoadPackage {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
                             if (Boolean.TRUE.equals(VIEW_ANCHORED.get())) {
-                                return;   // 锚在控件上的菜单（工具栏/标签栏等）不动
+                                return;
                             }
                             try {
                                 reposition(param);
@@ -73,13 +124,15 @@ public class ViaMenuModule implements IXposedHookLoadPackage {
                             }
                         }
                     });
-            XposedBridge.log(TAG + "已挂钩 " + MENU_BUILDER_CLASS + "." + SHOW_AT_METHOD + "(int,int)");
+            XposedBridge.log(TAG + "精准路径已挂钩 " + MENU_BUILDER_CLASS + "." + SHOW_AT_METHOD + "(int,int)");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "挂钩失败（Via 版本可能已变化）: " + t);
+            XposedBridge.log(TAG + "精准挂钩失败: " + t);
+            return false;
         }
 
         flagAnchorCalls(lpparam.classLoader, ANCHOR_METHOD_SIMPLE, View.class);
         flagAnchorCalls(lpparam.classLoader, ANCHOR_METHOD_VIEW, View.class, int.class, int.class);
+        return true;
     }
 
     /** i0/h0 都是「以控件为锚点」定位，标记出来让 g0 跳过改写。 */
@@ -164,25 +217,6 @@ public class ViaMenuModule implements IXposedHookLoadPackage {
         logFinalPosition(dialog, decor, targetTop);
     }
 
-    /** 目标位置：始终让菜单顶边落在手指下方；放不下就整体上移到屏幕下沿。 */
-    private int computeTargetTop(Context ctx, int fingerY, int menuHeight, int frameTop, int frameBottom) {
-        int gap = dp(ctx, 8f);       // 菜单顶边与手指的间距（别让指尖盖住第一项）
-        int margin = dp(ctx, 4f);    // 与可视区上下边缘的留白
-        int minTop = frameTop + margin;
-        int maxTop = frameBottom - menuHeight - margin;
-        if (maxTop < minTop) {
-            maxTop = minTop;
-        }
-        int targetTop = CENTER_ON_FINGER ? (fingerY - menuHeight / 2) : (fingerY + gap);
-        if (targetTop > maxTop) {
-            targetTop = maxTop;
-        }
-        if (targetTop < minTop) {
-            targetTop = minTop;
-        }
-        return targetTop;
-    }
-
     /**
      * 仅在入场动画结束后记录一次真实位置，方便核对（不改动窗口参数）。
      * 注意：动画播放期间 getLocationOnScreen() 会带上动画位移，不能用来校正。
@@ -231,6 +265,163 @@ public class ViaMenuModule implements IXposedHookLoadPackage {
             }
         }
         return null;
+    }
+
+    // ================================================================
+    // 路径 2：框架层兜底（不依赖任何混淆名）
+    // ================================================================
+
+    private void installFallbackHooks() {
+        try {
+            XposedHelpers.findAndHookMethod(Window.class, "setContentView", View.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    markDialogWindow((Window) param.thisObject);
+                }
+            });
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "兜底挂钩 setContentView(View) 失败: " + t);
+        }
+        try {
+            XposedHelpers.findAndHookMethod(Window.class, "setContentView", View.class,
+                    ViewGroup.LayoutParams.class, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            markDialogWindow((Window) param.thisObject);
+                        }
+                    });
+        } catch (Throwable ignored) {
+            // 某些 ROM 没有这个重载，不影响
+        }
+
+        try {
+            XposedHelpers.findAndHookMethod(Window.class, "setAttributes",
+                    WindowManager.LayoutParams.class, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            try {
+                                fixFallback(param);
+                            } catch (Throwable t) {
+                                XposedBridge.log(TAG + "兜底定位失败: " + t);
+                            }
+                        }
+                    });
+            XposedBridge.log(TAG + "兜底路径已挂钩 Window.setAttributes");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "兜底挂钩 Window.setAttributes 失败: " + t);
+        }
+    }
+
+    private static void markDialogWindow(Window window) {
+        if (window == null) {
+            return;
+        }
+        synchronized (DIALOG_WINDOWS) {
+            DIALOG_WINDOWS.put(window, Boolean.TRUE);
+        }
+    }
+
+    private static boolean isDialogWindow(Window window) {
+        synchronized (DIALOG_WINDOWS) {
+            return DIALOG_WINDOWS.containsKey(window);
+        }
+    }
+
+    /**
+     * 识别「点定位 + 列表内容」的弹层并就地改写窗口参数：
+     *   1) 垂直重力只能是 TOP/BOTTOM（居中弹窗不动）
+     *   2) 必须显式设过 x/y（点定位才会这样）
+     *   3) 内容里要有 ListView / RecyclerView（Via 长按菜单是列表）
+     * 改写：gravity = TOP|LEFT，y = clamp(锚点 + 8dp, 4dp, 框架高 − 菜单高 − 4dp)
+     */
+    private void fixFallback(XC_MethodHook.MethodHookParam param) {
+        Window window = (Window) param.thisObject;
+        if (!isDialogWindow(window)) {
+            return;
+        }
+        WindowManager.LayoutParams lp = (WindowManager.LayoutParams) param.args[0];
+        if (lp == null) {
+            return;
+        }
+        int vertical = lp.gravity & Gravity.VERTICAL_GRAVITY_MASK;
+        if (vertical != Gravity.TOP && vertical != Gravity.BOTTOM) {
+            return;
+        }
+        if ((lp.gravity & Gravity.HORIZONTAL_GRAVITY_MASK) == 0) {
+            return;
+        }
+        if (lp.x == 0 && lp.y == 0) {
+            return;
+        }
+        View decor = window.getDecorView();
+        if (decor == null || !containsList(decor, 0)) {
+            return;
+        }
+        int menuHeight = decor.getMeasuredHeight() > 0 ? decor.getMeasuredHeight() : decor.getHeight();
+        if (menuHeight <= 0) {
+            return;
+        }
+        Rect visible = new Rect();
+        decor.getWindowVisibleDisplayFrame(visible);
+        int frameHeight = visible.height();
+        if (frameHeight <= 0) {
+            return;
+        }
+
+        // 原锚点（相对框架顶部）：BOTTOM 情况下 lp.y 是"距框架底部的距离"
+        int anchorFromTop = vertical == Gravity.BOTTOM ? frameHeight - lp.y : lp.y;
+        int oldGravity = lp.gravity;
+        int targetTop = computeTargetTop(decor.getContext(), anchorFromTop, menuHeight, 0, frameHeight);
+
+        lp.gravity = Gravity.TOP | Gravity.LEFT;
+        lp.y = targetTop;
+        XposedBridge.log(TAG + "[兜底] anchorFromTop=" + anchorFromTop + " menuH=" + menuHeight
+                + " frameH=" + frameHeight + " gravity " + oldGravity + "->" + lp.gravity + " y=" + lp.y);
+    }
+
+    private static boolean containsList(View view, int depth) {
+        if (view == null || depth > 8) {
+            return false;
+        }
+        for (Class<?> c = view.getClass(); c != null; c = c.getSuperclass()) {
+            String name = c.getName();
+            if ("android.widget.ListView".equals(name) || "android.widget.AbsListView".equals(name)
+                    || name.endsWith(".RecyclerView")) {
+                return true;
+            }
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                if (containsList(group.getChildAt(i), depth + 1)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // ================================================================
+    // 共用：目标位置计算
+    // ================================================================
+
+    /** 目标位置：始终让菜单顶边落在手指下方；放不下就整体上移到屏幕下沿。 */
+    private int computeTargetTop(Context ctx, int fingerY, int menuHeight, int frameTop, int frameBottom) {
+        int gap = dp(ctx, 8f);       // 菜单顶边与手指的间距（别让指尖盖住第一项）
+        int margin = dp(ctx, 4f);    // 与可视区上下边缘的留白
+        int minTop = frameTop + margin;
+        int maxTop = frameBottom - menuHeight - margin;
+        if (maxTop < minTop) {
+            maxTop = minTop;
+        }
+        int targetTop = CENTER_ON_FINGER ? (fingerY - menuHeight / 2) : (fingerY + gap);
+        if (targetTop > maxTop) {
+            targetTop = maxTop;
+        }
+        if (targetTop < minTop) {
+            targetTop = minTop;
+        }
+        return targetTop;
     }
 
     private static int dp(Context ctx, float value) {

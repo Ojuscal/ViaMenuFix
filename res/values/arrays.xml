@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 建议作用域：Via 浏览器 -->
+    <!-- 建议作用域：Via 国内版 / Google Play 版 -->
     <string-array name="xposedscope">
         <item>mark.via</item>
+        <item>mark.via.gp</item>
     </string-array>
 </resources>

@@ -2,6 +2,19 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.0] - 2026-10-10
+
+### 新增
+- **支持 Via 7.3.3**（`mark.via` 国内版 与 `mark.via.gp` Google Play 版）：实测 7.3.3 与 7.3.4 的 R8 名称映射一致
+  （`w5/k.java` 行数相同、类/方法/字段签名零差异，仅构建标记注释不同），因此**一份模块通吃全部三个包**。
+- **框架层兜底路径**：精准 hook 找不到目标（Via 改名）时自动降级为 hook
+  `Window.setContentView` + `Window.setAttributes`，完全不依赖混淆名；可用 `FORCE_FALLBACK` 强制验证。
+- 启动日志打印 Via 包名/版本与当前生效的路径。
+
+### 变更
+- 作用域与包名判断扩展为 `mark.via` + `mark.via.gp`。
+- `versionCode` 2。
+
 ## [1.0.0] - 2026-10-09
 
 ### 新增

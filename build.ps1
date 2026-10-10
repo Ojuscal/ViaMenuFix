@@ -1,4 +1,4 @@
-﻿# Via Menu Fix —— 免 Gradle 构建脚本（Windows）
+# Via Menu Fix —— 免 Gradle 构建脚本（Windows）
 #
 # 依赖：JDK 17、Android SDK（build-tools 34.x + platforms/android-34）
 # 用法：powershell -ExecutionPolicy Bypass -File build.ps1
@@ -7,8 +7,8 @@
 $ErrorActionPreference = 'Continue'   # 原生命令的 warning 走 stderr 属正常，用 $LASTEXITCODE 判断成败
 
 $ROOT = $PSScriptRoot
-$VERSION_NAME = if ($env:VERSION_NAME) { $env:VERSION_NAME } else { '1.0.0' }
-$VERSION_CODE = if ($env:VERSION_CODE) { $env:VERSION_CODE } else { '1' }
+$VERSION_NAME = if ($env:VERSION_NAME) { $env:VERSION_NAME } else { '1.1.0' }
+$VERSION_CODE = if ($env:VERSION_CODE) { $env:VERSION_CODE } else { '2' }
 
 # ---- 定位 SDK ----
 $SDK = if ($env:ANDROID_HOME) { $env:ANDROID_HOME }

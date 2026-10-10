@@ -6,7 +6,7 @@
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 ![Xposed API 82](https://img.shields.io/badge/Xposed%20API-82-lightgrey.svg)
-![Via 7.3.4](https://img.shields.io/badge/Via-7.3.4%20(20260920)-green.svg)
+![Via 7.3.3 ~ 7.3.4](https://img.shields.io/badge/Via-7.3.3%20~%207.3.4-green.svg)
 ![Platform](https://img.shields.io/badge/Android-8.1%2B-brightgreen.svg)
 ![Powered by DeepSeek](https://img.shields.io/badge/Powered%20by-DeepSeek-4D6BFE.svg)
 
@@ -71,8 +71,8 @@ window.y  = targetTop - 框架原点
 
 | 项目 | 值 |
 |---|---|
-| Via 版本 | **7.3.4 (versionCode 20260920)** —— 其它版本混淆名会变，需重新适配 |
-| 包名 | `mark.via` |
+| Via 版本 | **7.3.3 与 7.3.4**（详见下表） |
+| 包名 | `mark.via`（国内版）/ `mark.via.gp`（Google Play 版） |
 | Xposed API | 82（老版 API，LSPosed / EdXposed 通用） |
 | 系统 | 实测 OnePlus 13 / Android 16 / KernelSU + Zygisk Next + LSPosed |
 | 模块权限 | **无**（不申请任何权限，不联网，不收集数据） |
@@ -175,10 +175,39 @@ private static final boolean CENTER_ON_FINGER = false;
 
 ## 已知限制 / Known limitations
 
-- 与 Via 的具体版本强绑定（R8 混淆名逐版本变化），升级后需要重新适配。
+- 与 Via 的具体版本绑定，但**一份模块已覆盖 7.3.3 / 7.3.4 全部渠道**；未来版本若改名，
+  会自动切换到框架层兜底路径（见下），必要时才需要重新适配。
 - 只处理**手指定位**的菜单；控件锚定的菜单（工具栏按钮等）故意不改。
 - 未适配页面里的其它弹层（如地址栏长按的复制/粘贴小菜单，走的是另一个类）。
 - 落点存在 141px（一个状态栏）的系统性偏移，原因见上文「两个反过来的坑」，实测无碍。
+
+## 一份模块如何覆盖多个 Via 版本 / Multi-version support
+
+**实测结论（硬对比）**：Via 的 R8 名称映射是**跨版本复用**的，不是每个版本重排。
+
+| 对比项 | 7.3.3 (mark.via) | 7.3.3 (mark.via.gp) | 7.3.4 (mark.via) |
+|---|---|---|---|
+| dex 里 `Lw5/k;` / `Lw5/k$o;` | ✅ | ✅ | ✅ |
+| `w5/k.java` 行数 | 1126 | 1126 | 1126 |
+| 彼此差异 | — | 0 行 | 仅 17 行 `r8-map-id-…` 构建标记注释 |
+| 类/方法/字段签名差异 | — | 0 | **0**（`g0(II)V`、`h0`、`i0`、字段 `a/c/e` 全同） |
+
+所以**同一个 APK 通吃三版**，唯一要扩展的是作用域：`mark.via` + `mark.via.gp`。
+
+为了将来 Via 真的大改时不用等我们更新，模块内置两条路径：
+
+1. **精准路径（默认）**：hook `w5.k.g0(II)V`，改动最小、最可控；
+2. **兜底路径（自动降级）**：当精准路径找不到目标类/方法时自动启用，完全不依赖混淆名——
+   hook `Window.setContentView(...)` 给对话框窗口打标记，再 hook `Window.setAttributes(...)`，
+   识别「点定位（gravity 为 TOP/BOTTOM+LEFT/RIGHT 且显式设了 x/y）+ 列表内容（ListView/RecyclerView）」
+   的弹层并就地改写 gravity/y。想验证这条路径，把源码里的 `FORCE_FALLBACK` 改成 `true` 重新编译即可。
+
+日志里会打印 Via 版本号与当前生效的路径：
+
+```
+[ViaMenuFix] 加载于 mark.via 7.3.4
+[ViaMenuFix] 精准路径已挂钩 w5.k.g0(int,int)
+```
 
 ## FAQ
 
@@ -189,8 +218,9 @@ A：不能直接用 LSPosed。可以考虑 [LSPatch](https://github.com/JingMatr
 **Q：模块会联网 / 收集数据吗？**
 A：不会。模块没有申请任何权限，没有网络代码，只在本机进程内改窗口参数。
 
-**Q：为什么只支持 7.3.4？**
-A：hook 目标是被 R8 混淆过的符号，每个版本都会重新分配名字。适配工作见上文。
+**Q：Via 升级后还能用吗？**
+A：Via 的混淆名跨版本复用（见上文实测对比），所以大概率直接可用；真遇到改名，
+模块会自动降级到框架层兜底路径继续生效，日志里会写明走了哪条路。
 
 ## Credits
 
